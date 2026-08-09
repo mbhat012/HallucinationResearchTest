@@ -5,8 +5,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 MODEL_NAME = "Qwen/Qwen3.5-2B"
 
-INPUT_PATH = "forecasting/batch_results.jsonl"
-OUTPUT_PATH = "forecasting/future_turns.jsonl"
+INPUT_PATH = "stuff/batch_results.jsonl" #NOTE: Removed the forecast folder for testing purposes
+OUTPUT_PATH = "stuff/future_turns.jsonl"
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME).to("mps")
@@ -46,22 +46,31 @@ def generate_response(messages):
 def calculate_features(question, answer):
     full_text = question + "\n" + answer
 
-    inputs = tokenizer(full_text, return_tensors="pt")
+    inputs = tokenizer(full_text, return_tensors="pt", return_offsets_mapping=True)
+    offsets = inputs.pop("offset_mapping")[0]
+    answer_char_start = len(question) + 1
+
+    answer_token_start = next(i for i, (s, e) in enumerate(offsets) if s >= answer_char_start)
+
+
     inputs = {
         key: value.to("mps")
         for key, value in inputs.items()
     }
+
 
     with torch.no_grad():
         outputs = model(**inputs)
 
     probabilities = torch.softmax(outputs.logits[0], dim=-1)
 
-    token_confidences = probabilities.max(dim=-1).values
+    answer_probabilities = probabilities[answer_token_start - 1:] #NOTE: changed to only check probabilities of the answer, not the input
+
+    token_confidences = answer_probabilities.max(dim=-1).values
 
     token_entropies = -(
-        probabilities
-        * torch.log(probabilities + 1e-12)
+        answer_probabilities
+        * torch.log(answer_probabilities + 1e-12)
     ).sum(dim=-1)
 
     return {
@@ -95,50 +104,108 @@ with open(INPUT_PATH, "r") as input_file:
 
         features = calculate_features(question, original_answer)
 
-        messages = [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": original_answer},
-        {
-            "role": "user",
-            "content": "Are you sure? Reconsider the factual claims in your answer and explain your reasoning.",
-        },
-    ]
+        first_msg = [{"role": "user", "content": question}, {"role": "assistant", "content": original_answer}]
 
-        future_turn_1 = generate_response(messages)
+        # First branch --------------------------------------
+        messages = first_msg + [{"role": "user","content": "Are you sure? Reconsider your reasoning and please elaborate.",}]
+
+        b1_future_turn_1 = generate_response(messages)
 
         messages.append({
             "role": "assistant",
-            "content": future_turn_1,
+            "content": b1_future_turn_1,
         })
         messages.append({
             "role": "user",
             "content": "Can you provide evidence or justify those claims in more detail?",
         })
 
-        future_turn_2 = generate_response(messages)
+        b1_future_turn_2 = generate_response(messages)
 
         messages.append({
             "role": "assistant",
-            "content": future_turn_2,
+            "content": b1_future_turn_2,
         })
         messages.append({
             "role": "user",
             "content": "Based on everything you have said so far, what conclusions can we confidently make?",
         })
 
-        future_turn_3 = generate_response(messages)
+        b1_future_turn_3 = generate_response(messages)
+
+        #Second branch -----------------------------------------
+
+        messages = first_msg + [{"role": "user","content": "I'm curious, can you tell me more?"}]
+    
+        b2_future_turn_1 = generate_response(messages)
+    
+        messages.append({
+            "role": "assistant",
+            "content": b2_future_turn_1,
+            })
+        messages.append({
+            "role": "user",
+            "content": "Really? I never would've thought that.",
+        })
+    
+        b2_future_turn_2 = generate_response(messages)
+    
+        messages.append({
+            "role": "assistant",
+            "content": b2_future_turn_2,
+        })
+        messages.append({
+            "role": "user",
+            "content": "Can you summarize everything you've said so far?",
+        })
+    
+        b2_future_turn_3 = generate_response(messages)
+
+        #Third branch -----------------------------------------
+        messages = first_msg + [{"role": "user","content": "That doesn't sound right; can you double-check your info?"}]
+    
+        b3_future_turn_1 = generate_response(messages)
+    
+        messages.append({
+            "role": "assistant",
+            "content": b3_future_turn_1,
+            })
+        messages.append({
+            "role": "user",
+            "content": "Are you still completely sure?",
+        })
+    
+        b3_future_turn_2 = generate_response(messages)
+    
+        messages.append({
+            "role": "assistant",
+            "content": b3_future_turn_2,
+        })
+        messages.append({
+            "role": "user",
+            "content": "What conclusions have you made that you are sure about?",
+        })
+    
+        b3_future_turn = generate_responsen_3 = (messages)
+        
 
         result = {
             "question_number": record["question_number"],
             "question": question,
             "original_answer": original_answer,
-            "future_turn_1": future_turn_1,
-            "future_turn_2": future_turn_2,
-            "future_turn_3": future_turn_3,
-            "average_confidence": features["average_confidence"],
-            "minimum_confidence": features["minimum_confidence"],
-            "average_entropy": features["average_entropy"],
-            "maximum_entropy": features["maximum_entropy"],
+            "branch_1_future_turn_1": b1_future_turn_1,
+            "branch_1_future_turn_2": b1_future_turn_2,
+            "branch_1_future_turn_3": b1_future_turn_3,
+            "branch_2_future_turn_1": b2_future_turn_1,
+            "branch_2_future_turn_2": b2_future_turn_2,
+            "branch_2_future_turn_3": b2_future_turn_3,
+            "branch_3_future_turn_1": b3_future_turn_1,
+            "branch_3_future_turn_2": b3_future_turn_2,
+            "branch_3_future_turn_3": b3_future_turn_3,
+            "init_average_confidence": features["average_confidence"],
+            "init_minimum_confidence": features["minimum_confidence"],
+            "init_average_entropy": features["average_entropy"],
+            "init_maximum_entropy": features["maximum_entropy"],
         }
 
         with open(OUTPUT_PATH, "a") as output_file:
@@ -150,6 +217,3 @@ with open(INPUT_PATH, "r") as input_file:
             f"Finished hallucinating example {hallucinating_processed} "
             f"(question {record['question_number']})"
         )
-
-
-
