@@ -1,0 +1,8 @@
+future_turns*.jsonl
+seeds_*.jsonl
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+.DS_Store
